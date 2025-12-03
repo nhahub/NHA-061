@@ -1,0 +1,232 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKERHUB_REPO_EN = 'ahmedmanwar/cicd-app-en'
+        DOCKERHUB_REPO_AR = 'ahmedmanwar/cicd-app-ar'
+        IMAGE_TAG = "build-${BUILD_NUMBER}"  
+    }
+
+    stages {
+        // Stage checkout from main branch 
+        stage('Checkout Main') {
+            when {
+                branch 'main'
+            }        
+            steps {
+                git branch: 'main',
+                    credentialsId: 'Github',
+                    url: 'https://github.com/AhmedMohamedAnwar/CI-CD-Pipeline-Deployment-to-Kubernetes-Cluster'
+            }
+        }
+
+        // Stage checkout from test branch 
+        stage('Checkout test') {
+            when {
+                branch 'test'
+            }           
+            steps {
+                git branch: 'test',
+                    credentialsId: 'Github',
+                    url: 'https://github.com/AhmedMohamedAnwar/CI-CD-Pipeline-Deployment-to-Kubernetes-Cluster'
+            }
+        }
+
+        // Stage Scanning docker image   
+        stage('Trivy Scanner') {
+            agent {
+                kubernetes {
+                    yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+  - name: trivy
+    image: aquasec/trivy:latest
+    command:
+    - cat
+    tty: true
+    volumeMounts:
+    - name: jenkins-home
+      mountPath: /workspace
+  volumes:
+  - name: jenkins-home
+    persistentVolumeClaim:
+      claimName: claim-jenkins-pv
+"""
+                }
+            }
+            steps {
+                container('trivy') {
+                    sh '''
+                      # Scan filesystem (node_modules, packages...)
+                      trivy fs ${WORKSPACE} --exit-code 1 || true
+
+                      # Scan Dockerfiles + Kubernetes YAMLs
+                      trivy config ${WORKSPACE} --exit-code 1 || true
+                    '''
+                }
+            }
+        }
+
+        stage('Build & Push Images (Kaniko)') {
+            agent {
+                kubernetes {
+                    yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+    - name: kaniko
+      image: gcr.io/kaniko-project/executor:debug
+      command:
+        - sleep
+      args:
+        - "99999"
+      volumeMounts:
+        - name: docker-config
+          mountPath: /kaniko/.docker/
+  volumes:
+    - name: docker-config
+      emptyDir: {}
+"""
+                }
+            }
+
+            steps {
+                container('kaniko') {
+                    script {
+                        withCredentials([usernamePassword(
+                            credentialsId: 'Dockerhub',
+                            usernameVariable: 'DOCKER_USER',
+                            passwordVariable: 'DOCKER_PASS'
+                        )]) {
+                            sh """
+                                set -e
+                                
+                                echo "Creating Docker config..."
+                                mkdir -p /kaniko/.docker
+                                
+                                cat > /kaniko/.docker/config.json <<EOF
+{
+  "auths": {
+    "https://index.docker.io/v1/": {
+      "auth": "\$(echo -n \${DOCKER_USER}:\${DOCKER_PASS} | base64 | tr -d '\\n')"
+    }
+  }
+}
+EOF
+                                
+                                echo "Building images with tag: ${IMAGE_TAG}"
+                                
+                                /kaniko/executor \
+                                    --context \${WORKSPACE}/app/arabic \
+                                    --dockerfile \${WORKSPACE}/app/arabic/Dockerfile \
+                                    --destination=${DOCKERHUB_REPO_AR}:${IMAGE_TAG} \
+                                    --destination=${DOCKERHUB_REPO_AR}:latest \
+                                    --verbosity=info
+                                
+                                /kaniko/executor \
+                                    --context \${WORKSPACE}/app/english \
+                                    --dockerfile \${WORKSPACE}/app/english/Dockerfile \
+                                    --destination=${DOCKERHUB_REPO_EN}:${IMAGE_TAG} \
+                                    --destination=${DOCKERHUB_REPO_EN}:latest \
+                                    --verbosity=info
+                                
+                                echo "Built and pushed images with tag: ${IMAGE_TAG}"
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes Cluster') {
+            agent {
+                kubernetes {
+                    yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins-service-account
+  containers:
+    - name: kubectl
+      image: alpine/k8s:1.28.3
+      command:
+        - cat
+      tty: true
+"""
+                }
+            }
+            
+            steps {
+                container('kubectl') {
+                    script {
+                        sh """
+                            echo "Deploying with image tag: ${IMAGE_TAG}"
+                            
+                            cat <<EOF > english-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: english-deployment
+  namespace: app-ns 
+  labels:
+    app: english-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: english-app
+  template:
+    metadata:
+      labels:
+        app: english-app
+    spec:
+      containers:
+      - name: english-app-container
+        image: ${DOCKERHUB_REPO_EN}:${IMAGE_TAG}
+        ports:
+        - containerPort: 3000
+EOF
+                            
+                            cat <<EOF > arabic-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: arabic-deployment
+  namespace: app-ns 
+  labels:
+    app: arabic-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: arabic-app
+  template:
+    metadata:
+      labels:
+        app: arabic-app
+    spec:
+      containers:
+      - name: arabic-app-container
+        image: ${DOCKERHUB_REPO_AR}:${IMAGE_TAG}
+        ports:
+        - containerPort: 3000
+EOF
+                            
+                            kubectl apply -f english-deployment.yaml
+                            kubectl apply -f arabic-deployment.yaml
+                            
+                            kubectl rollout status deployment english-deployment -n app-ns
+                            kubectl rollout status deployment arabic-deployment -n app-ns
+                            
+                            kubectl get deployments -n app-ns
+                            kubectl get pods -n app-ns
+                        """
+                    }
+                }
+            }
+        }
+    }
+}

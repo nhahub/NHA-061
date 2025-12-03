@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: english-deployment
+  namespace: app-ns 
+  labels:
+    app: english-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: english-app
+  template:
+    metadata:
+      labels:
+        app: english-app
+    spec:
+      containers:
+      - name: english-app-container
+        image: ahmedmanwar/cicd-app-en:latest
+        ports:
+        - containerPort: 3000

@@ -1,0 +1,88 @@
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: jenkins-pv
+spec:
+  capacity:
+    storage: 8Gi
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: "manual"  
+  accessModes:
+    - ReadWriteMany
+  hostPath:
+    path: /tmp/jenkins-data
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: claim-jenkins-pv
+  namespace: jenkins-ns
+spec:
+  accessModes:
+    - ReadWriteMany
+  volumeMode: Filesystem
+  resources:
+    requests:
+      storage: 8Gi
+  storageClassName: "manual"
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: jenkins-po
+  namespace: jenkins-ns
+  labels: 
+    jenkins: CICD-1
+spec: 
+  securityContext:
+    fsGroup: 1000 
+    runAsUser: 1000
+
+  initContainers:
+    - name: volume-permissions
+      image: busybox
+      command: ["sh", "-c", "chown -R 1000:1000 /var/jenkins_home"]
+      volumeMounts:
+        - mountPath: "/var/jenkins_home"
+          name: jenkins-home
+      securityContext:
+        runAsUser: 0
+
+  serviceAccountName: jenkins-service-account
+  
+  containers:
+  - name: jenkins-container
+    image: jenkins/jenkins:lts-jdk21  
+    ports:
+    - name: main-port 
+      containerPort: 8080
+    - name: slave-port 
+      containerPort: 50000
+    
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "500m"
+      limits:
+        memory: "2Gi"
+        cpu: "1000m"
+
+    livenessProbe:
+      httpGet:
+        path: "/login"  
+        port: 8080
+      initialDelaySeconds: 60
+      periodSeconds: 10 
+      timeoutSeconds: 5
+
+    volumeMounts:
+      - mountPath: "/var/jenkins_home"
+        name: jenkins-home
+        
+  volumes:
+    - name: jenkins-home
+      persistentVolumeClaim:
+        claimName: claim-jenkins-pv

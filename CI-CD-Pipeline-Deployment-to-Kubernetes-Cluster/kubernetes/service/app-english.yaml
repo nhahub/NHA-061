@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-english-service
+  namespace: app-ns 
+spec:
+  selector:
+    app: english-app
+  ports:
+  - name: english-srv-port
+    protocol: TCP
+    port: 80
+    targetPort: 3000

@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: arabic-deployment
+  namespace: app-ns 
+  labels:
+    app: arabic-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: arabic-app
+  template:
+    metadata:
+      labels:
+        app: arabic-app
+    spec:
+      containers:
+      - name: arabic-app-container
+        image: ahmedmanwar/cicd-app-ar:latest
+        ports:
+        - containerPort: 3000
